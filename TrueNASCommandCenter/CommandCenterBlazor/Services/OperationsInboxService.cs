@@ -329,12 +329,13 @@ public sealed class OperationsInboxService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
         var cutoff = now.AddDays(-90);
-        var apps = await db.Apps.AsNoTracking().ToDictionaryAsync(app => app.Id, app => app.Name, cancellationToken);
+        var apps = await db.Apps.AsNoTracking().ToDictionaryAsync(app => app.Id, cancellationToken);
         var attempts = await db.UpdateAttempts.AsNoTracking().Where(attempt => attempt.StartedUtc >= cutoff && (attempt.Status == AttemptStatus.Failed || attempt.Status == AttemptStatus.Succeeded)).OrderBy(attempt => attempt.StartedUtc).ToListAsync(cancellationToken);
         foreach (var attempt in attempts.Where(attempt => attempt.Status == AttemptStatus.Failed))
         {
-            var recovered = attempts.Any(candidate => candidate.AppId == attempt.AppId && candidate.Kind == attempt.Kind && candidate.Status == AttemptStatus.Succeeded && candidate.StartedUtc > attempt.StartedUtc);
-            var appName = apps.GetValueOrDefault(attempt.AppId, attempt.AppId);
+            apps.TryGetValue(attempt.AppId, out var app);
+            var recovered = HasLaterSuccessfulAttempt(attempt, attempts) || HasObservedCompletedUpdate(attempt, app);
+            var appName = app?.Name ?? attempt.AppId;
             observations.Add(new ObservedOperation(
                 Fingerprint("app-update-failure", attempt.Id.ToString("N")),
                 null,
@@ -402,6 +403,36 @@ public sealed class OperationsInboxService(
                 null,
                 recovered ? OperationsInboxStatus.Resolved : null));
         }
+    }
+
+    private static bool HasLaterSuccessfulAttempt(UpdateAttempt failedAttempt, IReadOnlyList<UpdateAttempt> attempts) =>
+        attempts.Any(candidate =>
+            candidate.AppId == failedAttempt.AppId &&
+            candidate.Kind == failedAttempt.Kind &&
+            candidate.Status == AttemptStatus.Succeeded &&
+            candidate.StartedUtc > failedAttempt.StartedUtc);
+
+    private static bool HasObservedCompletedUpdate(UpdateAttempt attempt, AppRecord? app)
+    {
+        if (app is null ||
+            !app.IsInstalled ||
+            attempt.Kind != AttemptKind.CatalogUpgrade ||
+            attempt.ReasonCode is not ("VERSION_VERIFICATION_FAILED" or "VERIFICATION_TIMEOUT") ||
+            !string.Equals(attempt.TrueNasJobState, "SUCCESS", StringComparison.OrdinalIgnoreCase) ||
+            app.LastCheckUtc is null ||
+            app.LastCheckUtc <= (attempt.EndedUtc ?? attempt.StartedUtc) ||
+            string.IsNullOrWhiteSpace(app.InstalledVersion))
+        {
+            return false;
+        }
+
+        if (string.Equals(app.InstalledVersion, attempt.ToVersion, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return !app.CatalogUpdateAvailable &&
+               !string.Equals(app.InstalledVersion, attempt.FromVersion, StringComparison.Ordinal);
     }
 
     private async Task<ReconciliationResult> ReconcileAsync(IReadOnlyCollection<ObservedOperation> observations, ISet<string> successfulGroups, DateTime now, CancellationToken cancellationToken)

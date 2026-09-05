@@ -245,6 +245,79 @@ public sealed class OperationsInboxServiceTests
         Assert.AreEqual(1, active.ResolvedCount);
     }
 
+    [TestMethod]
+    [TestCategory("Regression")]
+    public async Task RefreshAsync_SuccessfulJobAndObservedTargetVersion_ResolvesStaleVerificationFailure()
+    {
+        await using var database = new TestDatabase();
+        await database.InitializeAsync();
+        var now = new DateTimeOffset(2026, 9, 5, 18, 0, 0, TimeSpan.Zero);
+        var appId = "immich";
+        var attemptId = Guid.NewGuid();
+        await using (var db = await database.CreateDbContextAsync())
+        {
+            var app = new AppRecord
+            {
+                Id = appId,
+                Name = "Immich",
+                InstalledVersion = "1.14.35",
+                CatalogUpdateAvailable = true,
+                IsInstalled = true,
+                LastSeenUtc = now.AddMinutes(-12).UtcDateTime,
+                LastCheckUtc = now.AddMinutes(-12).UtcDateTime
+            };
+            var run = new UpdateRun
+            {
+                Trigger = RunTrigger.Scheduled,
+                StartedUtc = now.AddMinutes(-10).UtcDateTime,
+                EndedUtc = now.AddMinutes(-9).UtcDateTime,
+                Status = RunStatus.Failed
+            };
+            db.Apps.Add(app);
+            db.UpdateRuns.Add(run);
+            db.UpdateAttempts.Add(new UpdateAttempt
+            {
+                Id = attemptId,
+                Run = run,
+                App = app,
+                AppId = appId,
+                Kind = AttemptKind.CatalogUpgrade,
+                FromVersion = "1.14.35",
+                ToVersion = "1.14.36",
+                StartedUtc = now.AddMinutes(-10).UtcDateTime,
+                EndedUtc = now.AddMinutes(-9).UtcDateTime,
+                Status = AttemptStatus.Failed,
+                ReasonCode = "VERSION_VERIFICATION_FAILED",
+                ReasonMessage = "TrueNAS reports version 1.14.35 instead of 1.14.36.",
+                TrueNasJobId = 42,
+                TrueNasJobState = "SUCCESS"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using var provider = CreateProvider(database, new FakeWebPushSender(), now);
+        var service = CreateService(database, new FakeOperationsSystemClient(), provider, now);
+        await service.RefreshAsync();
+        var beforeRefresh = await service.GetSnapshotAsync(new OperationsInboxQuery(IncludeResolved: false));
+        Assert.IsTrue(beforeRefresh.Items.Any(item => item.SourceReference == attemptId.ToString("N")));
+
+        await using (var db = await database.CreateDbContextAsync())
+        {
+            var app = await db.Apps.SingleAsync(item => item.Id == appId);
+            app.InstalledVersion = "1.14.36";
+            app.CatalogUpdateAvailable = false;
+            app.LastCheckUtc = now.UtcDateTime;
+            await db.SaveChangesAsync();
+        }
+
+        await service.RefreshAsync();
+        var active = await service.GetSnapshotAsync(new OperationsInboxQuery(IncludeResolved: false));
+        var history = await service.GetSnapshotAsync(new OperationsInboxQuery());
+
+        Assert.IsFalse(active.Items.Any(item => item.SourceReference == attemptId.ToString("N")));
+        Assert.AreEqual(OperationsInboxStatus.Resolved, history.Items.Single(item => item.SourceReference == attemptId.ToString("N")).Status);
+    }
+
     private static async Task SeedLocalSourcesAsync(TestDatabase database, DateTime now)
     {
         await using var db = await database.CreateDbContextAsync();

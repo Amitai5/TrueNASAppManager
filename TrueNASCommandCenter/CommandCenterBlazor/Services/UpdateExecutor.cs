@@ -200,9 +200,8 @@ public sealed class UpdateExecutor(
             if (kind is AttemptKind.CatalogUpgrade or AttemptKind.Rollback &&
                 !string.Equals(current.Version, targetVersion, StringComparison.Ordinal))
             {
-                throw new TrueNasClientException(
-                    "VERSION_VERIFICATION_FAILED",
-                    $"TrueNAS reports version {current.Version ?? "unknown"} instead of {targetVersion}.");
+                await Task.Delay(TimeSpan.FromSeconds(2), timeProvider, cancellationToken);
+                continue;
             }
 
             if (kind == AttemptKind.ImageRefresh)

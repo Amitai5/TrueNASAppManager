@@ -975,6 +975,13 @@ public sealed class TrueNasJsonRpcClient(
     {
         switch (element.ValueKind)
         {
+            case JsonValueKind.Object:
+                if (element.TryGetProperty("$set", out var roleSet))
+                {
+                    CollectRoleValues(roleSet, roles);
+                }
+
+                break;
             case JsonValueKind.Array:
                 foreach (var item in element.EnumerateArray())
                 {

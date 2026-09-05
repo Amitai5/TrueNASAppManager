@@ -228,7 +228,7 @@ public sealed class TrueNasJsonRpcClientTests
 
     [TestMethod]
     [TestCategory("Regression")]
-    public async Task ConnectionTest_LoginOmitsRoles_LoadsEffectiveRolesFromAuthMe()
+    public async Task ConnectionTest_AuthMeRolesWrappedAsSet_ReturnsEffectiveRoles()
     {
         var setup = await TestClientFactory.CreateAsync();
         setup.Transport.OnSend = request =>
@@ -240,7 +240,17 @@ public sealed class TrueNasJsonRpcClientTests
                     setup.Transport.Respond(id, new { response_type = "SUCCESS", user_info = (object?)null });
                     break;
                 case "auth.me":
-                    setup.Transport.Respond(id, new { pw_name = "service", privilege = new { roles = new[] { "REPORTING_READ", "APPS_WRITE", "APPS_READ" } } });
+                    setup.Transport.Respond(id, new
+                    {
+                        pw_name = "service",
+                        privilege = new
+                        {
+                            roles = new Dictionary<string, object>
+                            {
+                                ["$set"] = new[] { "REPORTING_READ", "APPS_WRITE", "APPS_READ" }
+                            }
+                        }
+                    });
                     break;
                 case "core.ping":
                     setup.Transport.Respond(id, "pong");

@@ -39,6 +39,25 @@ public sealed class CoordinatorEndToEndTests
     }
 
     [TestMethod]
+    [TestCategory("Regression")]
+    public async Task CheckAndUpdate_FirstPostJobVersionReadIsStale_RetriesAndSucceeds()
+    {
+        await using var database = new TestDatabase();
+        await database.InitializeAsync();
+        await SeedPoliciesAsync(database);
+        var trueNas = new FakeTrueNasClient { CatalogVerificationStaleReads = 1 };
+        var coordinator = CreateCoordinator(database, trueNas, timeProvider: new ImmediateTimeProvider());
+
+        var result = await coordinator.RunAsync(RunTrigger.CheckAndUpdateNow, executeUpdates: true);
+
+        Assert.AreEqual(RunStatus.Succeeded, result.Status);
+        await using var db = await database.CreateDbContextAsync();
+        var attempt = await db.UpdateAttempts.SingleAsync(item => item.AppId == "catalog");
+        Assert.AreEqual(AttemptStatus.Succeeded, attempt.Status);
+        Assert.AreEqual(3, trueNas.CatalogVerificationReads);
+    }
+
+    [TestMethod]
     public async Task CheckAndUpdate_RefreshesCompleteInventoryBeforeStartingAnyUpdate()
     {
         await using var database = new TestDatabase();
@@ -150,9 +169,9 @@ public sealed class CoordinatorEndToEndTests
         Assert.AreSame(failure, loggedFailure.Exception);
     }
 
-    private static UpdateCoordinator CreateCoordinator(TestDatabase database, FakeTrueNasClient trueNas, IAppDiscoveryService? discoveryOverride = null, ILogger<UpdateCoordinator>? logger = null)
+    private static UpdateCoordinator CreateCoordinator(TestDatabase database, FakeTrueNasClient trueNas, IAppDiscoveryService? discoveryOverride = null, ILogger<UpdateCoordinator>? logger = null, TimeProvider? timeProvider = null)
     {
-        var time = new FixedTimeProvider(new DateTimeOffset(2026, 8, 12, 18, 0, 0, TimeSpan.Zero));
+        var time = timeProvider ?? new FixedTimeProvider(new DateTimeOffset(2026, 8, 12, 18, 0, 0, TimeSpan.Zero));
         var settings = database.CreateSettingsService();
         var discovery = discoveryOverride ?? new AppDiscoveryService(trueNas, database, time);
         var executor = new UpdateExecutor(
@@ -216,6 +235,8 @@ public sealed class CoordinatorEndToEndTests
         public bool FailCatalogJob { get; init; }
         public bool FailCatalogForServer { get; init; }
         public bool WriteAccess { get; init; } = true;
+        public int CatalogVerificationStaleReads { get; init; }
+        public int CatalogVerificationReads { get; private set; }
         public bool? HasWriteAccess => WriteAccess;
         public List<string> StartOrder { get; } = [];
         public List<string> CallOrder { get; } = [];
@@ -230,8 +251,20 @@ public sealed class CoordinatorEndToEndTests
             return Task.FromResult<IReadOnlyList<TrueNasAppDto>>(apps.Values.OrderBy(app => app.Id).ToList());
         }
 
-        public Task<TrueNasAppDto> GetAppAsync(string appId, CancellationToken cancellationToken = default) =>
-            Task.FromResult(apps[appId]);
+        public Task<TrueNasAppDto> GetAppAsync(string appId, CancellationToken cancellationToken = default)
+        {
+            var app = apps[appId];
+            if (appId == "catalog")
+            {
+                CatalogVerificationReads++;
+                if (CatalogVerificationReads <= CatalogVerificationStaleReads)
+                {
+                    app = app with { Version = "1.0.0", HumanVersion = "1.0.0", UpgradeAvailable = true };
+                }
+            }
+
+            return Task.FromResult(app);
+        }
 
         public Task<IReadOnlyList<string>> GetOutdatedImagesAsync(
             string appId,
