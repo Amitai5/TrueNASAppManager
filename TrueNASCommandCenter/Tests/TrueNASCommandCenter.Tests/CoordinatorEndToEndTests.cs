@@ -58,6 +58,46 @@ public sealed class CoordinatorEndToEndTests
     }
 
     [TestMethod]
+    [TestCategory("Regression")]
+    public async Task CheckAndUpdate_PostJobAppTemporarilyStopped_WaitsForRunningAndSucceeds()
+    {
+        await using var database = new TestDatabase();
+        await database.InitializeAsync();
+        await SeedPoliciesAsync(database);
+        var trueNas = new FakeTrueNasClient { CatalogVerificationStoppedReads = 2 };
+        var coordinator = CreateCoordinator(database, trueNas, timeProvider: new ImmediateTimeProvider());
+
+        var result = await coordinator.RunAsync(RunTrigger.CheckAndUpdateNow, executeUpdates: true);
+
+        Assert.AreEqual(RunStatus.Succeeded, result.Status);
+        await using var db = await database.CreateDbContextAsync();
+        var attempt = await db.UpdateAttempts.SingleAsync(item => item.AppId == "catalog");
+        Assert.AreEqual(AttemptStatus.Succeeded, attempt.Status);
+        Assert.AreEqual("VERIFIED", attempt.ReasonCode);
+        Assert.AreEqual(4, trueNas.CatalogVerificationReads);
+    }
+
+    [TestMethod]
+    [TestCategory("Regression")]
+    public async Task CheckAndUpdate_PostJobAppCrashes_RecordsVerificationFailure()
+    {
+        await using var database = new TestDatabase();
+        await database.InitializeAsync();
+        await SeedPoliciesAsync(database);
+        var trueNas = new FakeTrueNasClient { CatalogVerificationCrashes = true };
+        var coordinator = CreateCoordinator(database, trueNas);
+
+        var result = await coordinator.RunAsync(RunTrigger.CheckAndUpdateNow, executeUpdates: true);
+
+        Assert.AreEqual(RunStatus.PartiallySucceeded, result.Status);
+        await using var db = await database.CreateDbContextAsync();
+        var attempt = await db.UpdateAttempts.SingleAsync(item => item.AppId == "catalog");
+        Assert.AreEqual(AttemptStatus.Failed, attempt.Status);
+        Assert.AreEqual("STATE_VERIFICATION_FAILED", attempt.ReasonCode);
+        StringAssert.Contains(attempt.ReasonMessage, "CRASHED");
+    }
+
+    [TestMethod]
     public async Task CheckAndUpdate_RefreshesCompleteInventoryBeforeStartingAnyUpdate()
     {
         await using var database = new TestDatabase();
@@ -236,6 +276,8 @@ public sealed class CoordinatorEndToEndTests
         public bool FailCatalogForServer { get; init; }
         public bool WriteAccess { get; init; } = true;
         public int CatalogVerificationStaleReads { get; init; }
+        public int CatalogVerificationStoppedReads { get; init; }
+        public bool CatalogVerificationCrashes { get; init; }
         public int CatalogVerificationReads { get; private set; }
         public bool? HasWriteAccess => WriteAccess;
         public List<string> StartOrder { get; } = [];
@@ -257,7 +299,15 @@ public sealed class CoordinatorEndToEndTests
             if (appId == "catalog")
             {
                 CatalogVerificationReads++;
-                if (CatalogVerificationReads <= CatalogVerificationStaleReads)
+                if (CatalogVerificationCrashes)
+                {
+                    app = app with { State = "CRASHED" };
+                }
+                else if (CatalogVerificationReads <= CatalogVerificationStoppedReads)
+                {
+                    app = app with { State = "STOPPED" };
+                }
+                else if (CatalogVerificationReads <= CatalogVerificationStoppedReads + CatalogVerificationStaleReads)
                 {
                     app = app with { Version = "1.0.0", HumanVersion = "1.0.0", UpgradeAvailable = true };
                 }

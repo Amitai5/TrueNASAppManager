@@ -81,6 +81,9 @@ public sealed record TrueNasAlertDto
     [JsonPropertyName("text")]
     public string Text { get; init; } = string.Empty;
 
+    [JsonPropertyName("formatted")]
+    public string? Formatted { get; init; }
+
     [JsonPropertyName("level")]
     public string Level { get; init; } = "INFO";
 

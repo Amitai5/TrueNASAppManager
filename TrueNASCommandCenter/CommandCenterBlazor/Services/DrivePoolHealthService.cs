@@ -167,7 +167,7 @@ public sealed class DrivePoolHealthService(ITrueNasDriveHealthClient trueNasClie
             return new DriveHealthWarning(
                 NormalizeSeverity(alert.Level),
                 string.IsNullOrWhiteSpace(alert.ClassName) ? "Storage warning" : Humanize(alert.ClassName),
-                NormalizeText(FirstNotBlank(alert.Text, alert.ClassName, "TrueNAS reported a storage warning.")),
+                NormalizeText(TrueNasAlertTextFormatter.Format(alert, "TrueNAS reported a storage warning.")),
                 disk is null ? null : FirstNotBlank(disk.Name, disk.DeviceName),
                 pool?.Name);
         })
@@ -274,7 +274,7 @@ public sealed class DrivePoolHealthService(ITrueNasDriveHealthClient trueNasClie
             .Any(value => text.Contains(value!, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static string CombinedAlertText(TrueNasAlertDto alert) => $"{alert.ClassName} {alert.Text} {alert.Source} {alert.Node}";
+    private static string CombinedAlertText(TrueNasAlertDto alert) => TrueNasAlertTextFormatter.SearchText(alert, "TrueNAS reported a storage warning.");
 
     private static string NormalizeDeviceName(string value)
     {

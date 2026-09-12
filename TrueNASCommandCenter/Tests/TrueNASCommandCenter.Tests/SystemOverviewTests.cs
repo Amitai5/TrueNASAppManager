@@ -44,7 +44,7 @@ public sealed class SystemOverviewTests
             Alerts =
             [
                 new TrueNasAlertDto { Uuid = "dismissed", Text = "Old alert", Level = "CRITICAL", IsDismissed = true, LastOccurrence = new DateTimeOffset(2026, 8, 27, 17, 0, 0, TimeSpan.Zero) },
-                new TrueNasAlertDto { Uuid = "warning", Text = "Pool usage is high", Level = "WARNING", LastOccurrence = new DateTimeOffset(2026, 8, 27, 18, 0, 0, TimeSpan.Zero) },
+                new TrueNasAlertDto { Uuid = "warning", Text = "Pool %(name)s usage is high", Formatted = "Pool <strong>Main</strong> usage is high", Level = "WARNING", LastOccurrence = new DateTimeOffset(2026, 8, 27, 18, 0, 0, TimeSpan.Zero) },
                 new TrueNasAlertDto { Uuid = "critical", Source = "Disk", ClassName = "Smartd", Node = "atlas", Text = "Disk fault detected", Level = "critical", LastOccurrence = new DateTimeOffset(2026, 8, 27, 16, 0, 0, TimeSpan.Zero) }
             ],
             Pools = [new TrueNasPoolDto { Name = "tank", Status = "ONLINE", Healthy = true, Size = 1_000, Allocated = 250, Free = 750 }]
@@ -66,6 +66,7 @@ public sealed class SystemOverviewTests
         Assert.AreEqual(2, result.Alerts.ActiveCount);
         Assert.AreEqual(1, result.Alerts.CriticalCount);
         CollectionAssert.AreEqual(new[] { "critical", "warning", "dismissed" }, result.Alerts.Alerts.Select(alert => alert.Id).ToArray());
+        Assert.AreEqual("Pool Main usage is high", result.Alerts.Alerts.Single(alert => alert.Id == "warning").Text);
         Assert.IsTrue(result.Storage.IsAvailable);
         Assert.HasCount(1, result.Storage.Pools);
     }

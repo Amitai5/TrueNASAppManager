@@ -205,6 +205,8 @@ public sealed class OperationsInboxService(
             foreach (var alert in alerts.Where(alert => !alert.IsDismissed))
             {
                 var reference = FirstNotEmpty(alert.Uuid, alert.Id, $"{alert.ClassName}:{alert.CreatedAt:O}");
+                var summary = TrueNasAlertTextFormatter.Format(alert, "TrueNAS reported an alert.");
+                var isSuccessfulEvent = IsSuccessfulAlert(alert, summary);
                 observations.Add(new ObservedOperation(
                     Fingerprint("truenas-alert", reference),
                     TrueNasAlertsGroup,
@@ -212,15 +214,15 @@ public sealed class OperationsInboxService(
                     OperationsInboxKind.TrueNasAlert,
                     MapAlertSeverity(alert.Level),
                     string.IsNullOrWhiteSpace(alert.ClassName) ? "TrueNAS alert" : Humanize(alert.ClassName),
-                    Sanitize(alert.Text, 1024) ?? "TrueNAS reported an active alert.",
+                    Sanitize(summary, 1024) ?? "TrueNAS reported an alert.",
                     BuildDetails(("Source", alert.Source), ("Node", alert.Node), ("Level", alert.Level)),
                     reference,
                     null,
                     "/system#system-alerts",
                     alert.CreatedAt.UtcDateTime,
-                    true,
+                    !isSuccessfulEvent,
                     null,
-                    null));
+                    isSuccessfulEvent ? OperationsInboxStatus.Resolved : null));
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -349,7 +351,7 @@ public sealed class OperationsInboxService(
                 attempt.AppId,
                 $"/history?app={Uri.EscapeDataString(attempt.AppId)}",
                 attempt.StartedUtc,
-                false,
+                !recovered,
                 null,
                 recovered ? OperationsInboxStatus.Resolved : null));
         }
@@ -399,7 +401,7 @@ public sealed class OperationsInboxService(
                 notification.AppId,
                 "/history",
                 notification.CreatedUtc,
-                false,
+                !recovered,
                 null,
                 recovered ? OperationsInboxStatus.Resolved : null));
         }
@@ -417,7 +419,7 @@ public sealed class OperationsInboxService(
         if (app is null ||
             !app.IsInstalled ||
             attempt.Kind != AttemptKind.CatalogUpgrade ||
-            attempt.ReasonCode is not ("VERSION_VERIFICATION_FAILED" or "VERIFICATION_TIMEOUT") ||
+            attempt.ReasonCode is not ("STATE_VERIFICATION_FAILED" or "VERSION_VERIFICATION_FAILED" or "VERIFICATION_TIMEOUT") ||
             !string.Equals(attempt.TrueNasJobState, "SUCCESS", StringComparison.OrdinalIgnoreCase) ||
             app.LastCheckUtc is null ||
             app.LastCheckUtc <= (attempt.EndedUtc ?? attempt.StartedUtc) ||
@@ -644,6 +646,20 @@ public sealed class OperationsInboxService(
         "WARNING" or "WARN" => OperationsInboxSeverity.Warning,
         _ => OperationsInboxSeverity.Info
     };
+
+    private static bool IsSuccessfulAlert(TrueNasAlertDto alert, string summary)
+    {
+        if (MapAlertSeverity(alert.Level) != OperationsInboxSeverity.Info)
+        {
+            return false;
+        }
+
+        var evidence = $"{alert.ClassName} {summary}";
+        return !evidence.Contains("unsuccess", StringComparison.OrdinalIgnoreCase) &&
+               !evidence.Contains("failed", StringComparison.OrdinalIgnoreCase) &&
+               (evidence.Contains("success", StringComparison.OrdinalIgnoreCase) ||
+                evidence.Contains("succeeded", StringComparison.OrdinalIgnoreCase));
+    }
 
     private static string? TryGetRelatedAppId(TrueNasJobDto job)
     {

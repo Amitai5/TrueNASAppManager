@@ -101,7 +101,7 @@ public sealed class TrueNasSystemOverviewService(ITrueNasSystemClient trueNasCli
                     alert.CreatedAt.ToUniversalTime(),
                     alert.LastOccurrence.ToUniversalTime(),
                     alert.IsDismissed,
-                    NormalizeText(FirstNotBlank(alert.Text, alert.ClassName, "TrueNAS reported an alert.")),
+                    NormalizeText(TrueNasAlertTextFormatter.Format(alert, "TrueNAS reported an alert.")),
                     NormalizeSeverity(alert.Level),
                     alert.IsOneShot))
                 .OrderBy(alert => alert.IsDismissed)

@@ -168,33 +168,29 @@ public sealed class UpdateExecutor(
         }
     }
 
-    private async Task VerifyAsync(
-        AppRecord before,
-        AttemptKind kind,
-        string? targetVersion,
-        CancellationToken cancellationToken)
+    private async Task VerifyAsync(AppRecord before, AttemptKind kind, string? targetVersion, CancellationToken cancellationToken)
     {
         var originalImages = DeserializeImages(before.OutdatedImagesJson);
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var current = await trueNasClient.GetAppAsync(before.Id, cancellationToken);
-            if (current.State is "DEPLOYING" or "STOPPING")
+            var currentState = current.State.Trim().ToUpperInvariant();
+            if (currentState == "CRASHED")
+            {
+                throw new TrueNasClientException("STATE_VERIFICATION_FAILED", "The app is CRASHED after the operation.");
+            }
+
+            if (string.Equals(before.State, "RUNNING", StringComparison.OrdinalIgnoreCase) && currentState != "RUNNING")
             {
                 await Task.Delay(TimeSpan.FromSeconds(2), timeProvider, cancellationToken);
                 continue;
             }
 
-            if (before.State == "RUNNING" && current.State != "RUNNING")
+            if (currentState is "DEPLOYING" or "STOPPING")
             {
-                throw new TrueNasClientException(
-                    "STATE_VERIFICATION_FAILED",
-                    $"The app did not return to RUNNING; current state is {current.State}.");
-            }
-
-            if (current.State == "CRASHED")
-            {
-                throw new TrueNasClientException("STATE_VERIFICATION_FAILED", "The app is CRASHED after the operation.");
+                await Task.Delay(TimeSpan.FromSeconds(2), timeProvider, cancellationToken);
+                continue;
             }
 
             if (kind is AttemptKind.CatalogUpgrade or AttemptKind.Rollback &&

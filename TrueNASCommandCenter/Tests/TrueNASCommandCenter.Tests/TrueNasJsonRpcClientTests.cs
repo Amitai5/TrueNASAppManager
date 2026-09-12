@@ -620,6 +620,7 @@ public sealed class TrueNasJsonRpcClientTests
                     last_occurrence = new Dictionary<string, long> { ["$date"] = new DateTimeOffset(2026, 8, 27, 18, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds() },
                     dismissed = false,
                     text = "Disk fault detected",
+                    formatted = "Disk <strong>sda</strong> fault detected",
                     level = "CRITICAL",
                     one_shot = true
                 }
@@ -634,6 +635,7 @@ public sealed class TrueNasJsonRpcClientTests
         Assert.HasCount(1, alerts);
         Assert.AreEqual("alert-1", alerts[0].Uuid);
         Assert.AreEqual("CRITICAL", alerts[0].Level);
+        Assert.AreEqual("Disk <strong>sda</strong> fault detected", alerts[0].Formatted);
         Assert.AreEqual(new DateTimeOffset(2026, 8, 27, 18, 0, 0, TimeSpan.Zero), alerts[0].LastOccurrence);
         Assert.IsTrue(alerts[0].IsOneShot);
     }

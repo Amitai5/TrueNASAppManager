@@ -48,7 +48,9 @@ public sealed class OperationsInboxServiceTests
         Assert.IsTrue(snapshot.Items.Any(item => item.Kind == OperationsInboxKind.TrueNasAlert && item.DeepLink == "/system#system-alerts"));
         Assert.IsTrue(snapshot.Items.Any(item => item.Kind == OperationsInboxKind.TrueNasJob && item.RelatedAppId == "plex" && item.ProgressPercent == 45));
         Assert.IsTrue(snapshot.Items.Any(item => item.Kind == OperationsInboxKind.PoolScrub && item.DeepLink == "/system#storage-pools"));
-        Assert.IsTrue(snapshot.Items.Any(item => item.Kind == OperationsInboxKind.AppUpdateFailure && item.DeepLink.StartsWith("/history?app=", StringComparison.Ordinal)));
+        var updateFailure = snapshot.Items.Single(item => item.Kind == OperationsInboxKind.AppUpdateFailure);
+        Assert.IsTrue(updateFailure.DeepLink.StartsWith("/history?app=", StringComparison.Ordinal));
+        Assert.IsTrue(updateFailure.IsSourceActive);
         Assert.IsTrue(snapshot.Items.Any(item => item.Kind == OperationsInboxKind.UptimeKumaOutage));
         Assert.IsTrue(snapshot.Items.Any(item => item.Kind == OperationsInboxKind.NotificationFailure));
         Assert.AreEqual(3, pushSender.Calls);
@@ -247,7 +249,54 @@ public sealed class OperationsInboxServiceTests
 
     [TestMethod]
     [TestCategory("Regression")]
-    public async Task RefreshAsync_SuccessfulJobAndObservedTargetVersion_ResolvesStaleVerificationFailure()
+    public async Task RefreshAsync_TrueNasSuccessAlert_UsesFormattedTextAndMovesExistingItemToResolvedHistory()
+    {
+        await using var database = new TestDatabase();
+        await database.InitializeAsync();
+        var now = new DateTimeOffset(2026, 9, 12, 7, 0, 0, TimeSpan.Zero);
+        var alert = new TrueNasAlertDto
+        {
+            Uuid = "replication-success",
+            ClassName = "ReplicationResult",
+            Level = "INFO",
+            Text = "Replication task report.",
+            CreatedAt = now
+        };
+        var client = new FakeOperationsSystemClient { Alerts = [alert] };
+        var pushSender = new FakeWebPushSender();
+        await using var provider = CreateProvider(database, pushSender, now);
+        var service = CreateService(database, client, provider, now);
+        await service.RefreshAsync();
+
+        client.Alerts =
+        [
+            alert with
+            {
+                ClassName = "ReplicationSuccess",
+                Text = "Replication \"%(name)s\" succeeded.",
+                Formatted = "Replication <strong>Photos Backup</strong> succeeded."
+            }
+        ];
+        await service.RefreshAsync();
+        var active = await service.GetSnapshotAsync(new OperationsInboxQuery(IncludeResolved: false));
+        var history = await service.GetSnapshotAsync(new OperationsInboxQuery());
+        var item = history.Items.Single(candidate => candidate.SourceReference == alert.Uuid);
+
+        Assert.IsEmpty(active.Items);
+        Assert.AreEqual(OperationsInboxStatus.Resolved, item.Status);
+        Assert.AreEqual(OperationsInboxSeverity.Info, item.Severity);
+        Assert.AreEqual("Replication Photos Backup succeeded.", item.Summary);
+        Assert.IsFalse(item.IsSourceActive);
+        Assert.AreEqual(OperationsInboxPushState.NotRequested, item.PushState);
+        Assert.AreEqual(0, pushSender.Calls);
+    }
+
+    [TestMethod]
+    [DataRow("STATE_VERIFICATION_FAILED")]
+    [DataRow("VERSION_VERIFICATION_FAILED")]
+    [DataRow("VERIFICATION_TIMEOUT")]
+    [TestCategory("Regression")]
+    public async Task RefreshAsync_SuccessfulJobAndObservedTargetVersion_ResolvesStaleVerificationFailure(string reasonCode)
     {
         await using var database = new TestDatabase();
         await database.InitializeAsync();
@@ -287,8 +336,8 @@ public sealed class OperationsInboxServiceTests
                 StartedUtc = now.AddMinutes(-10).UtcDateTime,
                 EndedUtc = now.AddMinutes(-9).UtcDateTime,
                 Status = AttemptStatus.Failed,
-                ReasonCode = "VERSION_VERIFICATION_FAILED",
-                ReasonMessage = "TrueNAS reports version 1.14.35 instead of 1.14.36.",
+                ReasonCode = reasonCode,
+                ReasonMessage = "Post-update verification did not observe the completed upgrade.",
                 TrueNasJobId = 42,
                 TrueNasJobState = "SUCCESS"
             });
